@@ -562,16 +562,22 @@ class PrioritizedMemory:
         ------------------------
         max_size : Int, maximum size of the replay memory.
         sliding : String in ['oldest', 'random'], strategy for replacing experiences when full.
-        buffer : 2D np.array of shape (2, max_size), where:
-                    - buffer[0, :] stores experiences.
-                    - buffer[1, :] stores corresponding Node objects.
+        buffer : List of two lists, where:
+                - buffer[0] stores experiences.
+                - buffer[1] stores corresponding Node objects.
         tree : SumTree object for sampling.
         heap : Heap object for managing priorities.
         """
         self.max_size = max_size
         assert sliding in ["oldest", "random"], "sliding parameter must be either 'oldest' or 'random'"
         self.sliding = sliding
-        self.buffer = np.empty((2, max_size), dtype=object)
+        
+        # Initialize buffer as two lists
+        self.buffer = [[], []]  # First list for experiences, second for leaves
+        for _ in range(max_size):
+            self.buffer[0].append(None)
+            self.buffer[1].append(None)
+        
         self.tree = SumTree(max_size=max_size)
         self.heap = Heap()
 
@@ -579,7 +585,7 @@ class PrioritizedMemory:
         """
         Update the priority of the experience at the given index.
         """
-        node = self.buffer[1, index]
+        node = self.buffer[1][index]
         self.heap.update(node, priority)
         self.tree.update(node)
 
@@ -589,17 +595,29 @@ class PrioritizedMemory:
         """
         if not Node.saturated:
             leaf = Node(max_size=self.max_size, value=priority)
-            self.buffer[:, leaf.index] = np.array([experience, leaf], dtype=object)
+            index = leaf.index
+            
+            # Store experience and leaf separately
+            self.buffer[0][index] = experience
+            self.buffer[1][index] = leaf
+            
+            # Add the node to the tree and heap
             self.tree.add_leaf(leaf)
             self.heap.insert(leaf)
         else:
+            # Get the index to reuse based on the sliding strategy
             if self.sliding == "oldest":
                 index = Node.count % self.max_size
                 Node.count += 1
             elif self.sliding == "random":
                 index = np.random.randint(0, self.max_size)
-            leaf = self.buffer[1, index]
-            self.buffer[:, index] = np.array([experience, leaf])
+                
+            # Retrieve the existing node
+            leaf = self.buffer[1][index]
+            
+            # Update the buffer without creating a composite array
+            self.buffer[0][index] = experience
+            # The leaf node remains the same, just update its priority
             self.update(index, priority)
 
     def sample(self, batch_size):
@@ -610,8 +628,9 @@ class PrioritizedMemory:
             - An array of corresponding indices.
         """
         indices = self.tree.sample_batch(batch_size)
-        return list(self.buffer[0, indices]), indices
-
+        experiences = [self.buffer[0][i] for i in indices]
+        return experiences, indices
+    
     def highest_priority(self):
         """
         Return the highest priority in the replay buffer.
@@ -635,4 +654,7 @@ class PrioritizedMemory:
         """
         Return the priorities for the experiences at the given indices.
         """
-        return retrieve_value_vec(self.buffer[1, indices])
+        # Get the leaf nodes at the given indices
+        leaves = [self.buffer[1][i] for i in indices]
+        # Get the values/priorities from these leaves
+        return retrieve_value_vec(np.array(leaves, dtype=object))
